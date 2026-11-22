@@ -55,10 +55,10 @@ class ProxyVpnService : VpnService() {
         goForeground(intent?.getStringExtra("name") ?: "Proxy")
         val host = intent?.getStringExtra("host")
         if (host == null) { stopSelf(); return START_NOT_STICKY }
-        val port = intent.getIntExtra("port", 0)
-        val user = intent.getStringExtra("user")
-        val pass = intent.getStringExtra("pass")
-        val dns = intent.getIntExtra("dns", 0)
+        val port = intent?.getIntExtra("port", 0) ?: 0
+        val user = intent?.getStringExtra("user")
+        val pass = intent?.getStringExtra("pass")
+        val dns = intent?.getIntExtra("dns", 0) ?: 0
         Thread { startVpn(host, port, user, pass, dns) }.start()
         return START_NOT_STICKY
     }
@@ -171,4 +171,3 @@ misc:
     override fun onRevoke() { log("VPN revoked by system"); stopVpn(null) }
     override fun onDestroy() { log("Service destroyed"); if (running) stopVpn(null); super.onDestroy() }
 }
-
