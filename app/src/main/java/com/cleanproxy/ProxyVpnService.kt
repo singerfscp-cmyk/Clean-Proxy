@@ -25,16 +25,35 @@ class ProxyVpnService : VpnService() {
         const val ACTION_STOP = "stop"
         @Volatile var running = false
         @Volatile var listener: ((Boolean, String?) -> Unit)? = null
-        private val logs = ArrayList<String>()
+        @Volatile private var logFile: File? = null
+        private var handlerInstalled = false
+
+        @Synchronized fun initLogging(ctx: Context) {
+            logFile = File(ctx.cacheDir, "app.log")
+            if (!handlerInstalled) {
+                handlerInstalled = true
+                val prev = Thread.getDefaultUncaughtExceptionHandler()
+                Thread.setDefaultUncaughtExceptionHandler { t, e ->
+                    log("CRASH in ${t.name}: " + android.util.Log.getStackTraceString(e))
+                    prev?.uncaughtException(t, e)
+                }
+            }
+        }
 
         @Synchronized fun log(s: String) {
-            logs.add(SimpleDateFormat("HH:mm:ss", Locale.US).format(Date()) + " " + s)
-            if (logs.size > 200) logs.removeAt(0)
+            val line = SimpleDateFormat("HH:mm:ss", Locale.US).format(Date()) + " " + s
+            try {
+                logFile?.let { f ->
+                    if (f.length() > 100_000) f.writeText("")
+                    f.appendText(line + "\n")
+                }
+            } catch (_: Exception) { }
         }
 
         @Synchronized fun logText(ctx: Context): String {
             val sb = StringBuilder()
-            logs.forEach { sb.append(it).append('\n') }
+            val a = File(ctx.cacheDir, "app.log")
+            if (a.exists()) sb.append(a.readLines().takeLast(120).joinToString("\n")).append('\n')
             val f = File(ctx.cacheDir, "hev.log")
             if (f.exists()) {
                 sb.append("--- tunnel log ---\n")
@@ -45,6 +64,8 @@ class ProxyVpnService : VpnService() {
     }
 
     private var tun: ParcelFileDescriptor? = null
+
+    override fun onCreate() { super.onCreate(); initLogging(this); log("Service created") }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         if (intent?.action == ACTION_STOP) {
@@ -75,7 +96,7 @@ class ProxyVpnService : VpnService() {
             val pi = PendingIntent.getActivity(this, 0, Intent(this, MainActivity::class.java), PendingIntent.FLAG_IMMUTABLE)
             val n = b.setContentTitle("Clean Proxy").setContentText("SOCKS5 • $name")
                 .setSmallIcon(android.R.drawable.ic_lock_lock).setContentIntent(pi).setOngoing(true).build()
-            if (Build.VERSION.SDK_INT >= 34) startForeground(1, n, ServiceInfo.FOREGROUND_SERVICE_TYPE_SYSTEM_EXEMPTED)
+            if (Build.VERSION.SDK_INT >= 34) startForeground(1, n, ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE)
             else startForeground(1, n)
         } catch (e: Throwable) {
             log("Foreground notification failed: ${e.message}")
@@ -133,8 +154,9 @@ misc:
 """.trimStart()
             val f = File(cacheDir, "tproxy.yml")
             f.writeText(cfg)
-            log("Starting tunnel engine")
+            log("Starting tunnel engine (fd=${fd.fd})")
             TProxyService.TProxyStartService(f.absolutePath, fd.fd)
+            log("Tunnel engine returned")
             running = true
             log("Connected")
             listener?.invoke(true, null)
