@@ -1,5 +1,6 @@
 package com.cleanproxy
 
+import android.app.ActivityManager
 import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
@@ -59,6 +60,21 @@ class ProxyVpnService : VpnService() {
                 sb.append("--- tunnel log ---\n")
                 sb.append(f.readLines().takeLast(60).joinToString("\n"))
             }
+            if (Build.VERSION.SDK_INT >= 30) {
+                try {
+                    val am = ctx.getSystemService(Context.ACTIVITY_SERVICE) as ActivityManager
+                    sb.append("\n--- last exits ---\n")
+                    am.getHistoricalProcessExitReasons(ctx.packageName, 0, 3).forEach {
+                        sb.append("reason=${it.reason} status=${it.status} ${it.description}\n")
+                    }
+                } catch (_: Throwable) { }
+            }
+            try {
+                val p = Runtime.getRuntime().exec(arrayOf("logcat", "-d", "-t", "600"))
+                val rx = Regex("libc|JNI|hev|FATAL|AndroidRuntime|bort|signal|SIG|cleanproxy|UnsatisfiedLink|NoSuchMethod")
+                val keep = p.inputStream.bufferedReader().readLines().filter { rx.containsMatchIn(it) }.takeLast(40)
+                sb.append("\n--- system log ---\n").append(keep.joinToString("\n"))
+            } catch (_: Throwable) { }
             return sb.toString().ifBlank { "(empty)" }
         }
     }
