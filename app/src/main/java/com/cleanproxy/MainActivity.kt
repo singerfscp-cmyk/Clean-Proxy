@@ -94,6 +94,7 @@ class MainActivity : Activity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        ProxyVpnService.initLogging(this)
         val scroll = ScrollView(this).apply { setBackgroundColor(Color.parseColor("#0F1115")); isFillViewport = true }
         val root = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
@@ -339,7 +340,8 @@ class MainActivity : Activity() {
             .putExtra("host", c.host).putExtra("port", c.port).putExtra("user", c.user).putExtra("pass", c.pass)
             .putExtra("name", fName.text.toString().ifBlank { c.host })
             .putExtra("dns", fDns.selectedItemPosition)
-        if (Build.VERSION.SDK_INT >= 26) startForegroundService(i) else startService(i)
+        ProxyVpnService.log("Connect clicked")
+        startService(i)
     }
 
     private fun showLog() {
