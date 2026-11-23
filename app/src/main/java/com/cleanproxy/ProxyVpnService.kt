@@ -171,7 +171,8 @@ misc:
             val f = File(cacheDir, "tproxy.yml")
             f.writeText(cfg)
             log("Starting tunnel engine (fd=${fd.fd})")
-            TProxyService.TProxyStartService(f.absolutePath, fd.fd)
+            val started: Any = TProxyService.TProxyStartService(f.absolutePath, fd.fd)
+            if (started == false) throw Exception("Tunnel engine refused to start")
             log("Tunnel engine returned")
             running = true
             log("Connected")
