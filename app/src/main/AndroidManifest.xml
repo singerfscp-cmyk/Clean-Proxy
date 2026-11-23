@@ -14,6 +14,7 @@
             </intent-filter>
         </activity>
         <activity android:name=".TestIpActivity" android:exported="false" />
+        <activity android:name=".SavedProxiesActivity" android:exported="false" />
         <service android:name=".ProxyVpnService" android:exported="false"
             android:foregroundServiceType="specialUse"
             android:permission="android.permission.BIND_VPN_SERVICE">
