@@ -16,6 +16,59 @@ jobs:
           $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager "ndk;26.1.10909125" "platforms;android-34" "build-tools;34.0.0"
       - name: Fetch hev-socks5-tunnel
         run: git clone --recursive --depth 1 --shallow-submodules https://github.com/heiher/hev-socks5-tunnel app/src/main/jni/hev-socks5-tunnel
+      - name: Generate JNI binding that matches the library
+        run: |
+          cat > gen_jni.py <<'PYEOF'
+          import re, sys, os
+
+          SRC = 'app/src/main/jni/hev-socks5-tunnel/src/hev-jni.c'
+          OUT = 'app/src/main/java/hev/htproxy/TProxyService.java'
+
+          BASE = {'Z': 'boolean', 'B': 'byte', 'C': 'char', 'S': 'short', 'I': 'int',
+                  'J': 'long', 'F': 'float', 'D': 'double', 'V': 'void'}
+
+          def one(sig, i):
+              arr = 0
+              while sig[i] == '[':
+                  arr += 1
+                  i += 1
+              if sig[i] == 'L':
+                  j = sig.index(';', i)
+                  t = sig[i + 1:j].replace('/', '.')
+                  i = j + 1
+              else:
+                  t = BASE[sig[i]]
+                  i += 1
+              return t + '[]' * arr, i
+
+          def parse(sig):
+              m = re.match(r'\((.*)\)(.+)$', sig)
+              params, ret = m.group(1), m.group(2)
+              out, i = [], 0
+              while i < len(params):
+                  t, i = one(params, i)
+                  out.append(t)
+              r, _ = one(ret, 0)
+              return out, r
+
+          if not os.path.exists(SRC):
+              print('hev-jni.c not found, keeping default binding'); sys.exit(0)
+          text = open(SRC, encoding='utf-8', errors='ignore').read()
+          methods = re.findall(r'\{\s*"(\w+)"\s*,\s*"(\([^"]*\)[^"]+)"', text)
+          if not methods:
+              print('No native method table found, keeping default binding'); sys.exit(0)
+
+          lines = ['package hev.htproxy;', '', 'public class TProxyService {',
+                   '    static { System.loadLibrary("hev-socks5-tunnel"); }']
+          for name, sig in methods:
+              params, ret = parse(sig)
+              args = ', '.join('%s a%d' % (t, k) for k, t in enumerate(params))
+              lines.append('    public static native %s %s(%s);' % (ret, name, args))
+          lines.append('}')
+          open(OUT, 'w').write('\n'.join(lines) + '\n')
+          print('Generated binding:'); print('\n'.join(lines))
+          PYEOF
+          python3 gen_jni.py
       - uses: gradle/actions/setup-gradle@v4
         with: { gradle-version: "8.7" }
       - run: gradle assembleDebug --no-daemon
