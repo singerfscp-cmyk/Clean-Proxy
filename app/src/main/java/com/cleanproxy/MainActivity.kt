@@ -124,17 +124,20 @@ class MainActivity : Activity() {
         root.addView(row, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT))
 
         val btnRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
-        btnRow.addView(Button(this).apply {
-            text = "Paste"; setOnClickListener {
-                val cm = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-                val t = cm.primaryClip?.getItemAt(0)?.coerceToText(this@MainActivity)?.toString()
-                if (!t.isNullOrBlank()) input.setText(t.trim())
-            }
-        }, LinearLayout.LayoutParams(WRAP_CONTENT, WRAP_CONTENT))
-        btnRow.addView(Button(this).apply {
-            text = "Saved proxies"; setOnClickListener { showHistory() }
-        }, LinearLayout.LayoutParams(WRAP_CONTENT, WRAP_CONTENT).apply { leftMargin = dp(8) })
-        root.addView(btnRow, LinearLayout.LayoutParams(WRAP_CONTENT, WRAP_CONTENT).apply { topMargin = dp(8) })
+        fun rowBtn(label: String, action: () -> Unit) = Button(this).apply {
+            text = label; isAllCaps = false; setOnClickListener { action() }
+        }
+        btnRow.addView(rowBtn("Paste") {
+            val cm = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+            val t = cm.primaryClip?.getItemAt(0)?.coerceToText(this@MainActivity)?.toString()
+            if (!t.isNullOrBlank()) input.setText(t.trim())
+        }, LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f))
+        btnRow.addView(rowBtn("Save") { saveCurrent() },
+            LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f).apply { leftMargin = dp(6) })
+        btnRow.addView(rowBtn("Saved proxies") {
+            startActivityForResult(Intent(this@MainActivity, SavedProxiesActivity::class.java), 3)
+        }, LinearLayout.LayoutParams(0, WRAP_CONTENT, 1.4f).apply { leftMargin = dp(6) })
+        root.addView(btnRow, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT).apply { topMargin = dp(8) })
 
         status = TextView(this).apply { textSize = 14f; setTextColor(Color.parseColor(GRAY)); setPadding(0, dp(10), 0, dp(6)) }
         root.addView(status)
@@ -319,7 +322,7 @@ class MainActivity : Activity() {
                 val r = ProxyChecker.check(cfg)
                 runOnUiThread {
                     if (my != seq) return@runOnUiThread
-                    if (r.ok) { addHistory(cfg); setIcon("✓", GREEN); setStatus("Working • IP ${r.ip ?: "?"} • ${r.ms} ms", GREEN) }
+                    if (r.ok) { setIcon("✓", GREEN); setStatus("Working • IP ${r.ip ?: "?"} • ${r.ms} ms", GREEN) }
                     else { setIcon("✗", RED); setStatus(r.error ?: "Failed", RED) }
                 }
             }.start()
@@ -329,51 +332,29 @@ class MainActivity : Activity() {
 
 
     // ---------- saved proxies ----------
-    private fun prefs() = getSharedPreferences("p", MODE_PRIVATE)
-
-    private fun loadHistory(): MutableList<Pair<String, String>> {
-        val raw = prefs().getString("history", "") ?: ""
-        return raw.split('\n').filter { it.contains('\t') }
-            .map { it.substringBefore('\t') to it.substringAfter('\t') }.toMutableList()
-    }
-
-    private fun storeHistory(h: List<Pair<String, String>>) {
-        prefs().edit().putString("history", h.joinToString("\n") { it.first + "\t" + it.second }).apply()
-    }
-
-    private fun addHistory(c: ProxyConfig) {
+    private fun saveCurrent() {
+        val c = current
+        if (c == null) { Toast.makeText(this, "Enter a valid proxy first", Toast.LENGTH_SHORT).show(); return }
         val text = textFromConfig(c)
-        val name = fName.text.toString().trim().ifBlank { "${c.host}:${c.port}" }
-            .replace('\t', ' ').replace('\n', ' ')
-        val h = loadHistory()
-        h.removeAll { it.second == text }
-        h.add(0, name to text)
-        while (h.size > 30) h.removeAt(h.size - 1)
-        storeHistory(h)
-    }
-
-    private fun showHistory() {
-        val h = loadHistory()
-        if (h.isEmpty()) { Toast.makeText(this, "No saved proxies yet", Toast.LENGTH_SHORT).show(); return }
-        val labels = h.map { (n, t) ->
-            val c = ProxyParser.parse(t)
-            val hp = if (c != null) "${c.host}:${c.port}" else ""
-            if (hp.isNotEmpty() && n != hp) "$n\n$hp" else n
-        }.toTypedArray()
-        val dlg = AlertDialog.Builder(this).setTitle("Saved (tap = load, hold = delete)")
-            .setItems(labels) { _, i ->
-                val c = ProxyParser.parse(h[i].second)
-                val def = if (c != null) "${c.host}:${c.port}" else ""
-                fName.setText(if (h[i].first == def) "" else h[i].first)
-                input.setText(h[i].second)
-            }
-            .setNeutralButton("Clear all") { _, _ -> prefs().edit().remove("history").apply() }
-            .setNegativeButton("Close", null).create()
-        dlg.show()
-        dlg.listView.setOnItemLongClickListener { _, _, pos, _ ->
-            val nh = h.toMutableList(); nh.removeAt(pos); storeHistory(nh)
-            dlg.dismiss(); showHistory(); true
+        val name = fName.text.toString().trim()
+        if (name.isNotEmpty()) {
+            ProxyStore.save(this, name, text)
+            Toast.makeText(this, "Saved: $name", Toast.LENGTH_SHORT).show()
+            return
         }
+        val et = EditText(this).apply { hint = "Proxy name"; setSingleLine(); setPadding(dp(24), dp(16), dp(24), dp(16)) }
+        AlertDialog.Builder(this).setTitle("Name this proxy").setView(et)
+            .setPositiveButton("Save") { _, _ ->
+                val n = et.text.toString().trim()
+                if (n.isEmpty()) {
+                    Toast.makeText(this, "Name is required", Toast.LENGTH_SHORT).show()
+                    return@setPositiveButton
+                }
+                fName.setText(n)
+                ProxyStore.save(this, n, text)
+                Toast.makeText(this, "Saved: $n", Toast.LENGTH_SHORT).show()
+            }
+            .setNegativeButton("Cancel", null).show()
     }
 
     // ---------- VPN ----------
@@ -396,7 +377,6 @@ class MainActivity : Activity() {
 
     private fun startVpn() {
         val c = current ?: return
-        addHistory(c)
         connectBtn.isEnabled = false; connectBtn.text = "Connecting…"
         val i = Intent(this, ProxyVpnService::class.java).setAction(ProxyVpnService.ACTION_START)
             .putExtra("host", c.host).putExtra("port", c.port).putExtra("user", c.user).putExtra("pass", c.pass)
@@ -419,6 +399,10 @@ class MainActivity : Activity() {
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
         super.onActivityResult(requestCode, resultCode, data)
         if (requestCode == 1 && resultCode == RESULT_OK) startVpn()
+        if (requestCode == 3 && resultCode == RESULT_OK && data != null) {
+            fName.setText(data.getStringExtra("name") ?: "")
+            input.setText(data.getStringExtra("text") ?: "")
+        }
     }
 
     override fun onResume() { super.onResume(); refreshButton() }
