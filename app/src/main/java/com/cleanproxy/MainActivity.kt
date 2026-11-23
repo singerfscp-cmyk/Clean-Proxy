@@ -56,6 +56,7 @@ class MainActivity : Activity() {
     private var pending: Runnable? = null
     private var syncing = false
     private var ready = false
+    private var restoring = false
     private var current: ProxyConfig? = null
 
     private fun dp(v: Int) = (v * resources.displayMetrics.density).toInt()
@@ -122,13 +123,18 @@ class MainActivity : Activity() {
         row.addView(icon, LinearLayout.LayoutParams(dp(36), WRAP_CONTENT))
         root.addView(row, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT))
 
-        root.addView(Button(this).apply {
+        val btnRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        btnRow.addView(Button(this).apply {
             text = "Paste"; setOnClickListener {
                 val cm = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
                 val t = cm.primaryClip?.getItemAt(0)?.coerceToText(this@MainActivity)?.toString()
                 if (!t.isNullOrBlank()) input.setText(t.trim())
             }
-        }, LinearLayout.LayoutParams(WRAP_CONTENT, WRAP_CONTENT).apply { topMargin = dp(8) })
+        }, LinearLayout.LayoutParams(WRAP_CONTENT, WRAP_CONTENT))
+        btnRow.addView(Button(this).apply {
+            text = "Saved proxies"; setOnClickListener { showHistory() }
+        }, LinearLayout.LayoutParams(WRAP_CONTENT, WRAP_CONTENT).apply { leftMargin = dp(8) })
+        root.addView(btnRow, LinearLayout.LayoutParams(WRAP_CONTENT, WRAP_CONTENT).apply { topMargin = dp(8) })
 
         status = TextView(this).apply { textSize = 14f; setTextColor(Color.parseColor(GRAY)); setPadding(0, dp(10), 0, dp(6)) }
         root.addView(status)
@@ -206,9 +212,14 @@ class MainActivity : Activity() {
         }
 
         val prefs = getSharedPreferences("p", MODE_PRIVATE)
-        fName.setText(prefs.getString("name", ""))
-        fDns.setSelection(prefs.getInt("dns", 0))
-        input.setText(prefs.getString("proxy", ""))
+        val savedName = prefs.getString("name", "") ?: ""
+        val savedDns = prefs.getInt("dns", 0)
+        val savedProxy = prefs.getString("proxy", "") ?: ""
+        restoring = true
+        fName.setText(savedName)
+        fDns.setSelection(savedDns)
+        restoring = false
+        input.setText(savedProxy)
         ready = true
 
         ProxyVpnService.listener = { _, err ->
@@ -284,6 +295,7 @@ class MainActivity : Activity() {
     private fun setStatus(t: String, color: String) { status.text = t; status.setTextColor(Color.parseColor(color)) }
 
     private fun saveState() {
+        if (restoring) return
         getSharedPreferences("p", MODE_PRIVATE).edit()
             .putString("proxy", current?.let { textFromConfig(it) } ?: input.text.toString())
             .putString("name", fName.text.toString())
@@ -307,12 +319,61 @@ class MainActivity : Activity() {
                 val r = ProxyChecker.check(cfg)
                 runOnUiThread {
                     if (my != seq) return@runOnUiThread
-                    if (r.ok) { setIcon("✓", GREEN); setStatus("Working • IP ${r.ip ?: "?"} • ${r.ms} ms", GREEN) }
+                    if (r.ok) { addHistory(cfg); setIcon("✓", GREEN); setStatus("Working • IP ${r.ip ?: "?"} • ${r.ms} ms", GREEN) }
                     else { setIcon("✗", RED); setStatus(r.error ?: "Failed", RED) }
                 }
             }.start()
         }
         h.postDelayed(pending!!, 600)
+    }
+
+
+    // ---------- saved proxies ----------
+    private fun prefs() = getSharedPreferences("p", MODE_PRIVATE)
+
+    private fun loadHistory(): MutableList<Pair<String, String>> {
+        val raw = prefs().getString("history", "") ?: ""
+        return raw.split('\n').filter { it.contains('\t') }
+            .map { it.substringBefore('\t') to it.substringAfter('\t') }.toMutableList()
+    }
+
+    private fun storeHistory(h: List<Pair<String, String>>) {
+        prefs().edit().putString("history", h.joinToString("\n") { it.first + "\t" + it.second }).apply()
+    }
+
+    private fun addHistory(c: ProxyConfig) {
+        val text = textFromConfig(c)
+        val name = fName.text.toString().trim().ifBlank { "${c.host}:${c.port}" }
+            .replace('\t', ' ').replace('\n', ' ')
+        val h = loadHistory()
+        h.removeAll { it.second == text }
+        h.add(0, name to text)
+        while (h.size > 30) h.removeAt(h.size - 1)
+        storeHistory(h)
+    }
+
+    private fun showHistory() {
+        val h = loadHistory()
+        if (h.isEmpty()) { Toast.makeText(this, "No saved proxies yet", Toast.LENGTH_SHORT).show(); return }
+        val labels = h.map { (n, t) ->
+            val c = ProxyParser.parse(t)
+            val hp = if (c != null) "${c.host}:${c.port}" else ""
+            if (hp.isNotEmpty() && n != hp) "$n\n$hp" else n
+        }.toTypedArray()
+        val dlg = AlertDialog.Builder(this).setTitle("Saved (tap = load, hold = delete)")
+            .setItems(labels) { _, i ->
+                val c = ProxyParser.parse(h[i].second)
+                val def = if (c != null) "${c.host}:${c.port}" else ""
+                fName.setText(if (h[i].first == def) "" else h[i].first)
+                input.setText(h[i].second)
+            }
+            .setNeutralButton("Clear all") { _, _ -> prefs().edit().remove("history").apply() }
+            .setNegativeButton("Close", null).create()
+        dlg.show()
+        dlg.listView.setOnItemLongClickListener { _, _, pos, _ ->
+            val nh = h.toMutableList(); nh.removeAt(pos); storeHistory(nh)
+            dlg.dismiss(); showHistory(); true
+        }
     }
 
     // ---------- VPN ----------
@@ -335,6 +396,7 @@ class MainActivity : Activity() {
 
     private fun startVpn() {
         val c = current ?: return
+        addHistory(c)
         connectBtn.isEnabled = false; connectBtn.text = "Connecting…"
         val i = Intent(this, ProxyVpnService::class.java).setAction(ProxyVpnService.ACTION_START)
             .putExtra("host", c.host).putExtra("port", c.port).putExtra("user", c.user).putExtra("pass", c.pass)
